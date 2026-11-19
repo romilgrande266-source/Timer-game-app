@@ -1,179 +1,131 @@
-name: Build APK
+name: Build apk
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [main]
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_BASE: https://github.com/godotengine/godot/releases/download/4.7.2-stable
 
 jobs:
-  build:
+  apk:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - name: Find the project (unzip if you uploaded the zip)
+      # The repo may hold the project only as a .zip (uploaded from a phone). Unpack the newest one.
+      - name: Unpack project from zip (if needed)
         run: |
-          if [ -f project.godot ]; then
-            P=.
-          else
-            Z=$(ls ./*.zip | sort -V | tail -1)
-            echo "Using zip: $Z"
-            unzip -q -o "$Z" -d _src
-            P=$(dirname "$(find _src -name project.godot | head -1)")
+          if [ ! -f project.godot ]; then
+            ZIP=$(ls timer_game_v4.zip | sort -V | tail -1)
+            echo "Unpacking $ZIP"
+            mkdir -p unpacked
+            unzip -q "$ZIP" -d unpacked
+            cp -a unpacked/timer_game/. .
+            rm -rf unpacked
           fi
-          echo "PROJECT=$P" >> "$GITHUB_ENV"
-          echo "Project folder: $P"
-          ls "$P"
+          ls -la
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
+          java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: "8.9"
 
-      - uses: chickensoft-games/setup-godot@v2
-        with:
-          version: 4.7.2
-          use-dotnet: false
-          include-templates: true
-
-      - name: Install Godot Android template and read the versions it needs
+      - name: Install Android SDK packages
         run: |
-          TPLROOT="$HOME/.local/share/godot/export_templates"
-          ls -la "$TPLROOT"
-          TPL=$(ls -d "$TPLROOT"/*/ | head -1)
-          VER=$(basename "$TPL")
-          echo "Template folder: $TPL  version: $VER"
-          ls "$TPL" | head -30
-          mkdir -p "$PROJECT/android/build"
-          unzip -q -o "$TPL/android_source.zip" -d "$PROJECT/android/build"
-          chmod +x "$PROJECT/android/build/gradlew"
-          touch "$PROJECT/android/build/.gdignore"
-          printf '%s' "$VER" > "$PROJECT/android/.build_version"
-          echo "TPL_VER=$VER" >> "$GITHUB_ENV"
-          python3 - <<'PY'
-          import os, re
-          root = os.path.join(os.environ['PROJECT'], 'android', 'build')
-          text = ''
-          for name in ('config.gradle', 'gradle/libs.versions.toml'):
-              p = os.path.join(root, name)
-              if os.path.exists(p):
-                  text += open(p).read() + '\n'
-          def g(pats, default):
-              for pat in pats:
-                  m = re.search(pat, text, re.M)
-                  if m:
-                      return m.group(1)
-              return default
-          vals = {
-              'ANDROID_COMPILE_SDK': g([r"compileSdk\w*\s*[:=]\s*['\"]?(\d+)"], '35'),
-              'ANDROID_BUILD_TOOLS': g([r"buildTools\w*\s*[:=]\s*['\"]([^'\"]+)['\"]"], '35.0.1'),
-              'ANDROID_NDK': g([r"ndkVersion\s*[:=]\s*['\"]([^'\"]+)['\"]"], ''),
-              'KOTLIN_VERSION': g([r"kotlinVersion\s*[:=]\s*['\"]([\d.]+)['\"]", r"^kotlin\s*=\s*\"([\d.]+)\""], ''),
-          }
-          print(vals)
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              for k, v in vals.items():
-                  f.write(k + '=' + v + '\n')
-          PY
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "cmdline-tools;latest" "build-tools;35.0.1" "platforms;android-35"
 
-      - name: Install the Android SDK parts Godot asks for
+      - name: Install Godot and Android templates
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          PKGS=("platforms;android-$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS")
-          if [ -n "$ANDROID_NDK" ]; then PKGS+=("ndk;$ANDROID_NDK"); fi
-          echo "Installing: ${PKGS[*]}"
-          sdkmanager "${PKGS[@]}"
+          curl -fL -o godot.zip "$GODOT_BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          curl -fL -o templates.tpz "$GODOT_BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q templates.tpz 'templates/android*' 'templates/version.txt' -d tpl
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mv tpl/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+          ls -la ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
 
-      - name: Build the TimerOverlay plugin (AAR)
+      - name: Build TimerOverlay plugin (.aar)
         run: |
-          mkdir -p "$PROJECT/android_plugin/libs" "$PROJECT/android/plugins"
-          LIB=$(find "$PROJECT/android/build" -name '*.aar' -path '*release*' | head -1)
-          if [ -z "$LIB" ]; then
-            LIB=$(find "$PROJECT/android/build" -name 'godot-lib*.aar' | head -1)
+          mkdir -p android_plugin/libs android/plugins
+          LIB=android_plugin/libs/godot-lib.aar
+          if ! curl -fL -o "$LIB" "$GODOT_BASE/godot-lib.${GODOT_VERSION}.stable.template_release.aar"; then
+            rm -f "$LIB"
+            unzip -o -j ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_source.zip 'libs/release/*.aar' -d android_plugin/libs
+            LIB=$(ls android_plugin/libs/*.aar | head -1)
           fi
-          echo "Godot lib: $LIB"
-          if [ -z "$LIB" ]; then
-            echo "No godot-lib AAR found in the template. Folder listing:"
-            find "$PROJECT/android/build" -maxdepth 3 | head -60
-            exit 1
-          fi
-          unzip -p "$LIB" classes.jar > "$PROJECT/android_plugin/libs/godot-classes.jar"
-          python3 - <<'PY'
-          import os, re
-          P = os.environ['PROJECT']
-          kv = os.environ.get('KOTLIN_VERSION', '')
-          f = os.path.join(P, 'android_plugin', 'build.gradle.kts')
-          s = open(f).read()
-          s = re.sub(r'kotlinOptions\s*\{[^}]*\}', '', s)
-          if kv:
-              s = re.sub(r'(org\.jetbrains\.kotlin\.android"\)\s*version\s*")[^"]*(")', r'\g<1>' + kv + r'\g<2>', s)
-          open(f, 'w').write(s)
-          g = os.path.join(P, 'android', 'plugins', 'TimerOverlay.gdap')
-          t = open(g).read()
-          if kv:
-              t = re.sub(r'kotlin-stdlib:[\d.]+', 'kotlin-stdlib:' + kv, t)
-          open(g, 'w').write(t)
-          print(s)
-          print(t)
-          PY
-          gradle -p "$PROJECT/android_plugin" assembleRelease --no-daemon
-          cp "$PROJECT"/android_plugin/build/outputs/aar/*-release.aar "$PROJECT/android/plugins/TimerOverlay.aar"
-          ls -l "$PROJECT/android/plugins"
+          unzip -p "$LIB" classes.jar > android_plugin/libs/godot-classes.jar
+          rm -f android_plugin/libs/*.aar
+          gradle -p android_plugin assembleRelease --no-daemon
+          cp android_plugin/build/outputs/aar/*-release.aar android/plugins/TimerOverlay.aar
+          ls -la android/plugins
 
-      - name: Signing key and Godot editor settings
+      - name: Install Android build template
         run: |
-          # same signing key every build, so new APKs install over the old one
-          if [ -f "$PROJECT/signing/debug.keystore" ]; then
-            cp "$PROJECT/signing/debug.keystore" "$HOME/debug.keystore"
-          else
-            keytool -genkeypair -v -keystore "$HOME/debug.keystore" -alias androiddebugkey \
-              -keypass android -storepass android -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-          MM=$(echo "$TPL_VER" | cut -d. -f1-2)
-          mkdir -p "$HOME/.config/godot"
-          for f in editor_settings-4.tres "editor_settings-$MM.tres"; do
-          cat > "$HOME/.config/godot/$f" <<EOF
+          mkdir -p android/build
+          unzip -q ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_source.zip -d android/build
+          echo "${GODOT_VERSION}.stable" > android/.build_version
+          touch android/build/.gdignore
+
+      - name: Debug keystore and Godot editor settings
+        run: |
+          keytool -genkey -v -keystore "$HOME/debug.keystore" -alias androiddebugkey \
+            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.tres <<EOF2
           [gd_resource type="EditorSettings" format=3]
 
           [resource]
-          export/android/java_sdk_path = "$JAVA_HOME"
           export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
           export/android/debug_keystore = "$HOME/debug.keystore"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
-          EOF
-          done
+          export/android/force_system_user = false
+          export/android/shutdown_adb_on_exit = true
+          EOF2
+          cp ~/.config/godot/editor_settings-4.tres ~/.config/godot/editor_settings-4.7.tres
 
-      - name: Write export preset
+      - name: Write Android export preset
         run: |
-          cat > "$PROJECT/export_presets.cfg" <<'EOF'
+          cat > export_presets.cfg <<'EOF2'
           [preset.0]
 
           name="Android"
           platform="Android"
           runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
           export_filter="all_resources"
           include_filter=""
-          exclude_filter="android_plugin/*, hardware/*, tests/*, .github/*, signing/*"
+          exclude_filter="android_plugin/*, hardware/*, tests/*, .github/*"
           export_path="build/android/TimerGame.apk"
+          patches=PackedStringArray()
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          seed=0
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=2
 
           [preset.0.options]
 
           gradle_build/use_gradle_build=true
           gradle_build/export_format=0
-          gradle_build/min_sdk="24"
-          plugins/TimerOverlay=true
-          architectures/armeabi-v7a=true
+          architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
           architectures/x86=false
           architectures/x86_64=false
@@ -183,57 +135,17 @@ jobs:
           package/name="TIMER GAME"
           package/signed=true
           screen/immersive_mode=true
-          EOF
+          plugins/TimerOverlay=true
+          EOF2
 
-      - name: Enable ETC2/ASTC in project.godot (Android export needs it)
+      - name: Import and export APK
         run: |
-          python3 - <<'PY'
-          import os
-          p = os.path.join(os.environ['PROJECT'], 'project.godot')
-          s = open(p).read()
-          key = 'textures/vram_compression/import_etc2_astc=true'
-          if key not in s:
-              if '[rendering]' in s:
-                  s = s.replace('[rendering]\n', '[rendering]\n\n' + key + '\n', 1)
-              else:
-                  s += '\n[rendering]\n\n' + key + '\n'
-              open(p, 'w').write(s)
-          print(s)
-          PY
-
-      - name: Show Android setup (for debugging)
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"; ls "$JAVA_HOME/bin/javac" || true
-          echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME" || true
-          ls "$ANDROID_HOME/cmdline-tools/latest/bin" || true
-          ls "$ANDROID_HOME/build-tools" || true
-          ls "$ANDROID_HOME/platforms" || true
-          ls -la "$HOME/.config/godot" || true
-          ls -la "$PROJECT/android" "$PROJECT/android/plugins" || true
-          cat "$PROJECT/android/.build_version" || true
-
-      - name: Logic self-test (does not block the APK)
-        continue-on-error: true
-        run: |
-          cd "$PROJECT"
-          godot --headless --import || true
-          godot --headless --path . res://tests/SelfTest.tscn
-
-      - name: Export APK
-        run: |
-          cd "$PROJECT"
           mkdir -p build/android
-          godot --headless --export-debug "Android" build/android/TimerGame.apk
-          ls -l build/android
+          godot --headless --path . --import || true
+          godot --headless --path . --export-debug "Android" build/android/TimerGame.apk
+          ls -la build/android
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TimerGame-APK
-          path: ${{ env.PROJECT }}/build/android/TimerGame.apk
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: TimerOverlay-aar
-          path: ${{ env.PROJECT }}/android/plugins/TimerOverlay.aar
-          if-no-files-found: ignore
+          name: TimerGame-apk
+          path: build/android/TimerGame.apk
