@@ -20,7 +20,7 @@ jobs:
       - name: Unpack project from zip (if needed)
         run: |
           if [ ! -f project.godot ]; then
-            ZIP=$(ls timer_game_v4.zip | sort -V | tail -1)
+            ZIP=$(ls timer_game_v[0-9]*.zip | sort -V | tail -1)
             echo "Unpacking $ZIP"
             mkdir -p unpacked
             unzip -q "$ZIP" -d unpacked
