@@ -16,6 +16,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Locate project and verify files
+        run: |
+          P=$(dirname "$(find . -name project.godot -not -path './.git/*' | head -1)")
+          echo "Project folder: $P"
+          if [ "$P" != "." ]; then
+            cp -a "$P"/. .
+          fi
+          MISSING=""
+          for f in project.godot export_presets.cfg android/plugins/TimerOverlay.gdap \
+                   android_plugin/settings.gradle.kts android_plugin/build.gradle.kts \
+                   android_plugin/src/main/AndroidManifest.xml \
+                   android_plugin/src/main/java/com/timergame/overlay/OverlayService.kt; do
+            if [ ! -f "$f" ]; then echo "MISSING FILE: $f"; MISSING=1; fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "---- files found in repo ----"
+            find . -path ./.git -prune -o -type f -print | head -150
+            exit 1
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -54,7 +74,7 @@ jobs:
           fi
           unzip -p "$LIB" classes.jar > android_plugin/libs/godot-classes.jar
           rm -f android_plugin/libs/*.aar
-          gradle -p android_plugin assembleRelease --no-daemon
+          (cd android_plugin && gradle assembleRelease --no-daemon)
           cp android_plugin/build/outputs/aar/*-release.aar android/plugins/TimerOverlay.aar
           ls -la android/plugins
 
