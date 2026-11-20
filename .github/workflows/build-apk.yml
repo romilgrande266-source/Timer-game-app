@@ -16,13 +16,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Locate project and verify files
+      - name: Unzip project (if only zip files are in the repo) and verify files
         run: |
+          if [ -z "$(find . -name project.godot -not -path './.git/*' | head -1)" ]; then
+            Z=$(ls timer_game*.zip 2>/dev/null | sort -V | tail -1)
+            if [ -z "$Z" ]; then
+              echo "No project.godot and no timer_game*.zip found in the repo"
+              find . -path ./.git -prune -o -type f -print | head -100
+              exit 1
+            fi
+            echo "Extracting $Z"
+            unzip -q -o "$Z" -d _unz
+          fi
           P=$(dirname "$(find . -name project.godot -not -path './.git/*' | head -1)")
           echo "Project folder: $P"
           if [ "$P" != "." ]; then
             cp -a "$P"/. .
           fi
+          rm -rf _unz ./*.zip
           MISSING=""
           for f in project.godot export_presets.cfg android/plugins/TimerOverlay.gdap \
                    android_plugin/settings.gradle.kts android_plugin/build.gradle.kts \
@@ -35,6 +46,7 @@ jobs:
             find . -path ./.git -prune -o -type f -print | head -150
             exit 1
           fi
+          echo "Project OK"
 
       - uses: actions/setup-java@v4
         with:
