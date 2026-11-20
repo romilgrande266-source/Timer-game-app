@@ -1,4 +1,4 @@
-name: Build apk
+name: Build apk (32-bit + 64-bit)
 
 on:
   workflow_dispatch:
@@ -15,19 +15,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      # The repo may hold the project only as a .zip (uploaded from a phone). Unpack the newest one.
-      - name: Unpack project from zip (if needed)
-        run: |
-          if [ ! -f project.godot ]; then
-            ZIP=$(ls timer_game_v[0-9]*.zip | sort -V | tail -1)
-            echo "Unpacking $ZIP"
-            mkdir -p unpacked
-            unzip -q "$ZIP" -d unpacked
-            cp -a unpacked/timer_game/. .
-            rm -rf unpacked
-          fi
-          ls -la
 
       - uses: actions/setup-java@v4
         with:
@@ -78,11 +65,16 @@ jobs:
           echo "${GODOT_VERSION}.stable" > android/.build_version
           touch android/build/.gdignore
 
-      - name: Debug keystore and Godot editor settings
+      - name: Signing keystore and Godot editor settings
         run: |
-          keytool -genkey -v -keystore "$HOME/debug.keystore" -alias androiddebugkey \
-            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ -f signing/debug.keystore ]; then
+            cp signing/debug.keystore "$HOME/debug.keystore"
+            echo "Using signing/debug.keystore (same signature on every build)"
+          else
+            keytool -genkey -v -keystore "$HOME/debug.keystore" -alias androiddebugkey \
+              -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
           mkdir -p ~/.config/godot
           cat > ~/.config/godot/editor_settings-4.tres <<EOF2
           [gd_resource type="EditorSettings" format=3]
@@ -98,54 +90,31 @@ jobs:
           EOF2
           cp ~/.config/godot/editor_settings-4.tres ~/.config/godot/editor_settings-4.7.tres
 
-      - name: Write Android export preset
+      - name: Check export presets
         run: |
-          cat > export_presets.cfg <<'EOF2'
-          [preset.0]
+          grep -q 'name="Android Universal (32+64-bit)"' export_presets.cfg || { echo "export_presets.cfg is missing the 32/64-bit Android presets"; exit 1; }
 
-          name="Android"
-          platform="Android"
-          runnable=true
-          advanced_options=false
-          dedicated_server=false
-          custom_features=""
-          export_filter="all_resources"
-          include_filter=""
-          exclude_filter="android_plugin/*, hardware/*, tests/*, .github/*"
-          export_path="build/android/TimerGame.apk"
-          patches=PackedStringArray()
-          encryption_include_filters=""
-          encryption_exclude_filters=""
-          seed=0
-          encrypt_pck=false
-          encrypt_directory=false
-          script_export_mode=2
+      - name: Import project
+        run: godot --headless --path . --import || true
 
-          [preset.0.options]
-
-          gradle_build/use_gradle_build=true
-          gradle_build/export_format=0
-          architectures/armeabi-v7a=false
-          architectures/arm64-v8a=true
-          architectures/x86=false
-          architectures/x86_64=false
-          version/code=1
-          version/name="1.0"
-          package/unique_name="com.timergame.app"
-          package/name="TIMER GAME"
-          package/signed=true
-          screen/immersive_mode=true
-          plugins/TimerOverlay=true
-          EOF2
-
-      - name: Import and export APK
+      - name: Export APK - Universal (32-bit + 64-bit)
         run: |
           mkdir -p build/android
-          godot --headless --path . --import || true
-          godot --headless --path . --export-debug "Android" build/android/TimerGame.apk
+          rm -rf android/build/build
+          godot --headless --path . --export-debug "Android Universal (32+64-bit)" build/android/TimerGame-universal.apk
+
+      - name: Export APK - 64-bit only (arm64-v8a)
+        run: |
+          rm -rf android/build/build
+          godot --headless --path . --export-debug "Android 64-bit" build/android/TimerGame-arm64-v8a.apk
+
+      - name: Export APK - 32-bit only (armeabi-v7a)
+        run: |
+          rm -rf android/build/build
+          godot --headless --path . --export-debug "Android 32-bit" build/android/TimerGame-armeabi-v7a.apk
           ls -la build/android
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TimerGame-apk
-          path: build/android/TimerGame.apk
+          name: TimerGame-apk-32bit-64bit
+          path: build/android/*.apk
